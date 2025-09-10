@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Wed Sep 10 20:34:45 2025
+
+@author: balli
+"""
+
+# -*- coding: utf-8 -*-
+"""
 Created on Mon Sep  1 12:20:43 2025
 
 @author: balli
@@ -433,6 +440,55 @@ def generate_story_text(slots):
     titles = [slot["card"]["title"] for slot in slots if slot["card"]]
     return ". ".join(titles) + "." if titles else "(No story yet)"
 
+
+##########################################################
+##########################################################
+EXPECTED_SEQUENCE = [
+    "Indian Village", "A Farmer", "Farmer'S Beautiful Daughter",
+    "Money Lender", "Ledger Of Money Lender",
+    "If Dept Is Not Paid Then Go To Jail,  Threat By Money Lander",
+    "Bargain Proposed By Money Lander", "Two Pebbles", "Money Bag",
+    "Out Of Two Only One Pebble In Hand", "Observe What Money Landder Do",
+    "Put  Two Back Pebble In Money Bag Instead Of Putting One Black And One White And Close Money Bag",
+    "Picks A Pebble From Out Of Two Pebble  In Money Bag",
+    "Farmer'S Daughter Drop Pebble On Pebble Street", "Pebble Path",
+    "Minimal Evidence (Use What Remains (The Leftover Pebble) To Prove The Truth)",
+    "Change The Frame (Redefine The Rules Of Judgment So The Problem Is Solved Indirectly)",
+    "Exploit Symmetry (Turn The Cheater’S Identical Choices Into Proof That Protects You)",
+    "Third Option Create A New Way Beyond Two Bad Options"
+]
+
+def auto_story_quality(analytics, slots):
+    """Compute a 0–9 story quality score automatically based on sequence, dwell, and stability."""
+    # --- Factor 1: completeness ---
+    filled_titles = [s["card"]["title"] for s in slots if s["card"]]
+    completeness = len(filled_titles) / len(EXPECTED_SEQUENCE)
+
+    # --- Factor 2: dwell time attention (target ~3s) ---
+    avg_dwell = sum(analytics["slot_dwell"]) / max(1, len(slots))
+    dwell_factor = min(1.0, avg_dwell / 3.0)
+
+    # --- Factor 3: rearrangements penalty ---
+    manual_places = analytics.get("placements_from_deck", 0)
+    rearr = analytics.get("rearrangements_total", 0)
+    stability = 1.0
+    if manual_places > 0:
+        stability = 1.0 - min(1.0, rearr / manual_places)
+
+    # --- Factor 4: sequence accuracy ---
+    seq_matches = sum(1 for i, t in enumerate(filled_titles) if i < len(EXPECTED_SEQUENCE) and t == EXPECTED_SEQUENCE[i])
+    seq_factor = seq_matches / max(1, len(EXPECTED_SEQUENCE))
+
+    # Combine weighted factors → 0–9 scale
+    raw_score = (0.35 * completeness + 0.25 * dwell_factor + 0.20 * stability + 0.20 * seq_factor) * 9.0
+    return round(raw_score, 1)
+
+
+
+
+
+##########################################################
+##########################################################
 def save_story_text(analytics, slots):
     ensure_log_dir()
     sess = analytics["session_id"]
@@ -440,7 +496,10 @@ def save_story_text(analytics, slots):
     path = os.path.join(LOG_DIR, f"{sess}_story.txt")
     with open(path, "w", encoding="utf-8") as f:
         f.write("Story:\n" + story_text + "\n")
+    analytics["story_quality"] = auto_story_quality(analytics, slots)
     return path
+##########################################################
+##########################################################
 
 def save_session_files(analytics, slots):
     """Save CSV move log + JSON summary (includes metrics & story text)."""
@@ -490,6 +549,118 @@ def save_session_files(analytics, slots):
 
 
 #####################################33
+def show_final_story_popup2(slots, analytics):
+    """
+    Final Story popup with ability to save story text AND give a story-quality rating (0-9).
+    Saves rating into analytics['story_quality'] and shows a quick confirmation.
+    """
+    popup_open = True
+    scroll_y = 0
+    back_btn  = pygame.Rect(SCREEN_SIZE[0]//2 - 300, POPUP_BTN_Y, 180, 40)
+    save_btn  = pygame.Rect(SCREEN_SIZE[0]//2 -  90, POPUP_BTN_Y, 220, 40)
+    rate_dec  = pygame.Rect(SCREEN_SIZE[0]//2 + 140, POPUP_BTN_Y - 80, 44, 40)  # - button
+    rate_inc  = pygame.Rect(SCREEN_SIZE[0]//2 + 220, POPUP_BTN_Y - 80, 44, 40)  # + button
+    rate_box  = pygame.Rect(SCREEN_SIZE[0]//2 + 190, POPUP_BTN_Y - 80, 28, 40)
+
+    # initialise rating if present otherwise default to 5
+    if analytics.get("story_quality") is None:
+        rating = 5
+    else:
+        try:
+            rating = int(analytics.get("story_quality"))
+            rating = max(0, min(9, rating))
+        except:
+            rating = 5
+
+    while popup_open:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    popup_open = False
+                elif event.key == pygame.K_DOWN:
+                    scroll_y += 20
+                elif event.key == pygame.K_UP:
+                    scroll_y = max(0, scroll_y - 20)
+                elif event.key == pygame.K_LEFT:
+                    rating = max(0, rating - 1)
+                elif event.key == pygame.K_RIGHT:
+                    rating = min(9, rating + 1)
+                elif event.key in (pygame.K_0, pygame.K_KP0, pygame.K_1, pygame.K_2, pygame.K_3,
+                                   pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9):
+                    # quick number entry 0-9
+                    ch = event.key - pygame.K_0
+                    if 0 <= ch <= 9:
+                        rating = ch
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
+                if event.button == 1:
+                    if back_btn.collidepoint(mx, my):
+                        popup_open = False
+                    elif save_btn.collidepoint(mx, my):
+                        path = save_story_text(analytics, slots)
+                        # save rating as well
+                        analytics["story_quality"] = int(rating)
+                        confirm = small_font.render(f"Saved: {os.path.basename(path)}  | Rating: {rating}/9", True, (180,255,180))
+                        screen.blit(confirm, (SCREEN_SIZE[0]//2 - confirm.get_width()//2, SCREEN_SIZE[1]-100))
+                        pygame.display.flip(); pygame.time.delay(900)
+                    elif rate_dec.collidepoint(mx, my):
+                        rating = max(0, rating - 1)
+                    elif rate_inc.collidepoint(mx, my):
+                        rating = min(9, rating + 1)
+                    elif rate_box.collidepoint(mx, my):
+                        # clicking the box focuses it for keyboard number input - simple UX: do nothing special
+                        pass
+                elif event.button == 4:  # up
+                    scroll_y = max(0, scroll_y - 20)
+                elif event.button == 5:  # down
+                    scroll_y += 20
+
+        # draw overlay and content
+        overlay = pygame.Surface(SCREEN_SIZE); overlay.set_alpha(220); overlay.fill((0,0,0))
+        screen.blit(overlay, (0,0))
+
+        title = big_font.render("Final Story", True, (255,255,255))
+        screen.blit(title, (60, 20))
+
+        text = generate_story_text(slots)
+        maxw = SCREEN_SIZE[0] - 120
+        words = text.split(); lines=[]; cur=""
+        for w in words:
+            test = cur + " " + w if cur else w
+            if font.render(test, True, (255,255,255)).get_width() <= maxw:
+                cur = test
+            else:
+                lines.append(cur); cur = w
+        if cur: lines.append(cur)
+        y = 80 - scroll_y
+        for ln in lines:
+            screen.blit(font.render(ln, True, (230,230,230)), (60, y)); y += 28
+
+        # Rating UI
+        label = small_font.render("Story quality (0–9):", True, (200,200,200))
+        screen.blit(label, (SCREEN_SIZE[0]//2 - 260, POPUP_BTN_Y - 80 + 6))
+        # draw - button, + button and rating
+        pygame.draw.rect(screen, (70,70,78), rate_dec, border_radius=6)
+        pygame.draw.rect(screen, (70,70,78), rate_inc, border_radius=6)
+        dec_txt = font.render("-", True, (255,255,255))
+        inc_txt = font.render("+", True, (255,255,255))
+        screen.blit(dec_txt, (rate_dec.centerx - dec_txt.get_width()//2, rate_dec.centery - dec_txt.get_height()//2))
+        screen.blit(inc_txt, (rate_inc.centerx - inc_txt.get_width()//2, rate_inc.centery - inc_txt.get_height()//2))
+        # rating box
+        pygame.draw.rect(screen, (40,40,48), rate_box, border_radius=6)
+        rtxt = font.render(str(rating), True, (240,240,240))
+        screen.blit(rtxt, (rate_box.centerx - rtxt.get_width()//2, rate_box.centery - rtxt.get_height()//2))
+
+        draw_button(back_btn, "Back")
+        draw_button(save_btn, "Save Story Text & Rating")
+        pygame.display.flip()
+        clock.tick(60)
+
+
+
+
 #####################################33
 def show_final_story_popup(slots, analytics):
     popup_open = True
@@ -600,6 +771,17 @@ def show_analytics_popup(slots, analytics):
     ####################################
 
     while popup_open:
+        
+        
+        # refresh SUS/TLX from the latest saved responses each frame so Analytics shows current values
+        sus_val = compute_sus(analytics.get("sus_responses"))
+        if sus_val is not None:
+            analytics["sus_score"] = sus_val
+        tlx_val = compute_tlx_avg(analytics.get("tlx"))
+        if tlx_val is not None:
+            analytics["tlx_avg"] = tlx_val
+
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT: pygame.quit(); sys.exit()
             elif event.type == pygame.KEYDOWN:
